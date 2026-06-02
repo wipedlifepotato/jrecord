@@ -10,6 +10,7 @@
 #include <unistd.h>
 ///
 //////
+static unsigned int rate = 48000;
 typedef unsigned char byte;
 class audio_recorder {
   struct buffer {
@@ -27,14 +28,22 @@ private:
     std::cout << " set_audio recorder " << std::endl;
     struct sio_par par;
     sio_initpar(&par);
+  //  par.rate = 48000;
+    par.rchan = 2;
+    par.pchan = 0;
     par.bits = 16;
+    par.bps = 2;
     par.sig = 1;
     par.le = 1;
-    par.rate = 44100;
-    par.pchan = 1;
-    par.appbufsz = 44100 / 25;
+    par.msb = 1;
     if (!sio_setpar(handler, &par)) {
       throw std::runtime_error("Could not set audio parameters");
+    }
+    if (!sio_getpar(handler,&par)) {
+        throw std::runtime_error("sio_getpar failed");
+    }
+    if (par.bits != 16 || par.bps != 2 || par.sig != 1 || par.le != 1) {
+	    throw std::runtime_error("device does not support 16-bit little-endian PCM");
     }
     if (!sio_start(handler)) {
       throw std::runtime_error("sio_start err");
@@ -56,17 +65,20 @@ public:
     if (m_handler_sio)
       sio_close(m_handler_sio);
   }
-  std::shared_ptr<buffer> get_data(size_t count = 512) {
+  byte m_buf[2048];
+
+  std::shared_ptr<buffer> get_data(size_t count = 1024) {
     auto b = std::make_shared<buffer>();
     b->size = count;
     b->data = std::shared_ptr<byte[]>(new byte[count]);
-    auto c = 0;
-    while (c < count) {
-      auto v = sio_read(m_handler_sio, b->data.get() + c, count);
-      if (v == 0)
-        break;
-      c += v;
+
+    size_t total = 0;
+    while (total < count) {
+        auto v = sio_read(m_handler_sio, b->data.get() + total, count - total);
+        if (v == 0) break;
+        total += v;
     }
+    b->size = total;
     return b;
   }
 };
@@ -107,12 +119,13 @@ public:
       }
       remove(out.c_str());
     }
-
+   std::string cmd = "ffmpeg -f x11grab -i :0.0 "
+                  "-f s16le -ar "+std::to_string(rate)+" -ac 1 -i pipe:0 "
+                  "-af \"aresample=async=1\" "
+                  "-c:v libx264 -preset ultrafast -c:a aac -b:a 128k " + out;
     FILE *f =
-        popen(("ffmpeg -f x11grab -flush_packets 1 -i :0.0 -f s16le -ar 44100 "
-               "-ac 1 -i pipe:0 -c:v libx264 -c:a aac -preset ultrafast " +
-               out + " >/dev/null")
-                  .c_str(),
+        popen(
+              cmd.c_str(),
               "w");
     if (!f) {
       throw std::runtime_error("Can't call ffmpeg for x11grab");
@@ -122,48 +135,26 @@ public:
       //	std::cout << "RUNS" << std::endl;
       while (running) {
         //		std::cout << "write sound" << std::endl;
-        write_sound(20);
+        write_sound();
       }
     });
   }
   void stop(void) {
     running = false;
+    std::lock_guard<std::mutex> lock(mtx);
     if (mPopen)
       pclose(mPopen);
   }
-  void write_sound(size_t chunks_ms = 20) { // seconds) {
-    /*
-                    auto bufferDataSize2Seconds = [&seconds]() {
-                            return 44100 * seconds;
-                    };
-    */
-    size_t bytes_per_chunk = (44100 * 2 * chunks_ms) / 1000;
+  void write_sound() {
+    auto n = m_recorder.get_data();
 
-    if (mPopen) {
-      std::lock_guard<std::mutex> lock(mtx);
-      auto data = m_recorder.get_data(bytes_per_chunk);
-      if (!fwrite(data->data.get(), 1, data->size, mPopen)) {
-        std::cout << data->data.get()[0] << std::endl;
-        throw std::runtime_error("can't write sound");
-      }
-      fflush(mPopen);
-
-#ifdef DEBUG
-      long long sum = 0;
-      for (size_t i = 0; i < data->size; i++)
-        sum += (signed char)data->data[i];
-
-      if (sum == 0) {
-        std::cout << "SILENCE FROM SNDIO!" << std::endl;
-      }
-      static FILE *f = fopen("raw_dump.pcm", "wb");
-      if (f) {
-        fwrite(data->data.get(), 1, data->size, f);
-        fflush(f);
-      }
-#endif
+    std::lock_guard<std::mutex> lock(mtx);
+    if (n->size > 0 && mPopen) {
+        fwrite(n->data.get(), 1, n->size, mPopen);
     }
-  }
+}
+
+  
   ~VideoRecorder() { stop(); }
 };
 VideoRecorder *global_recorder = nullptr;
@@ -173,12 +164,19 @@ void close_program(int signo) {
   }
 }
 int main(int argc, char **argv, char **env) {
-  //	auto rec = audio_recorder();
-  //	auto data = rec.get_data();
-  // for (auto i = 0; i< data->size;i++){
-  //	std::cout << char(data->data[i]) << std::endl;
-  //}
-  
+#ifdef DEBUG_ONLY_VOICE
+  	auto rec = audio_recorder();
+ 	auto data = rec.get_data();
+   for (auto i = 0; i< data->size;i++){
+//  	std::cout << char(data->data[i]) << std::endl;
+  }
+   FILE* audio_file = fopen("/tmp/audio.pcm", "wb");
+   for (int i = 1000;i>0;i--) {
+	data = rec.get_data();
+   	fwrite(data->data.get(), 1, data->size, audio_file);
+   }
+   exit(0);
+#endif
   if (signal(SIGINT, close_program) == SIG_ERR) {
     fprintf(stderr, "An error occurred while setting a signal handler.\n");
     return EXIT_FAILURE;
@@ -186,7 +184,7 @@ int main(int argc, char **argv, char **env) {
   int opt;
   std::string audio_dev{};
   std::string out_path{};
-  while ((opt = getopt(argc, argv, "f:a:h")) != -1) {
+  while ((opt = getopt(argc, argv, "f:a:hr:")) != -1) {
         switch (opt) {
             case 'f':
                 out_path = optarg;
@@ -194,8 +192,11 @@ int main(int argc, char **argv, char **env) {
             case 'a':
                 audio_dev = optarg;
                 break;
+            case 'r':
+				rate = atoi(optarg);
+				break;
             default:
-                fprintf(stderr, "Usage: %s [-f output_file] [-a audio_device]\n", argv[0]);
+                fprintf(stderr, "Usage: %s [-f output_file] [-a audio_device] [-r if your voice is bad try to use -r 94100. for a while idk why so. need to think]\n", argv[0]);
                 return EXIT_FAILURE;
         }
   }
