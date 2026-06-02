@@ -28,7 +28,7 @@ private:
     std::cout << " set_audio recorder " << std::endl;
     struct sio_par par;
     sio_initpar(&par);
-  //  par.rate = 48000;
+    par.rate = rate/2;
     par.rchan = 2;
     par.pchan = 0;
     par.bits = 16;
@@ -134,14 +134,15 @@ public:
     write_sound_thread = std::thread([this]() {
       //	std::cout << "RUNS" << std::endl;
       while (running) {
+    	std::lock_guard<std::mutex> lock(mtx);
         //		std::cout << "write sound" << std::endl;
         write_sound();
       }
     });
   }
   void stop(void) {
-    running = false;
     std::lock_guard<std::mutex> lock(mtx);
+    running = false;
     if (mPopen)
       pclose(mPopen);
   }
