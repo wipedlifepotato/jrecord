@@ -134,7 +134,7 @@ public:
     write_sound_thread = std::thread([this]() {
       //	std::cout << "RUNS" << std::endl;
       while (running) {
-    	std::lock_guard<std::mutex> lock(mtx);
+    	//std::lock_guard<std::mutex> lock(mtx);
         //		std::cout << "write sound" << std::endl;
         write_sound();
       }
