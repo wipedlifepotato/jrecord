@@ -66,6 +66,8 @@ libc++abi: terminating
 ```
 
 Control+C for stop record
+for RTSP stream just give a URI to stream.
+
 
 for support:
 XMR: 89huUbiqEw64tN6DdFN6vpdvVGm9WJzfJCJ3JDHc7bsri4bfcNoZAGBZmarThFXZnrPPAVZYo6fTYDyLSf8RpJ539Btm39o
